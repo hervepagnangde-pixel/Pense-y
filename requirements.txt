@@ -1,0 +1,16 @@
+streamlit
+pandas
+numpy
+plotly
+requests
+beautifulsoup4
+lxml
+python-dotenv
+pydantic
+scikit-learn
+scipy
+statsmodels
+feedparser
+yfinance
+openai
+tenacity
