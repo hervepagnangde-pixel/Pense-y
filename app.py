@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime
+import os
 from typing import Any, Callable
 
 import pandas as pd
 import streamlit as st
 
 from agents.orchestrator import MultiAgentOrchestrator
+from config.auth import require_password, render_logout_button
 from config.settings import get_settings
 from modules.financial_models import calculate_simple_return
 from modules import market_data
@@ -166,6 +168,8 @@ def sidebar() -> str:
         f"Environnement : {settings.environment}\n\n"
         f"Session : {datetime.now():%d/%m/%Y %H:%M}"
     )
+    st.sidebar.divider()
+    render_logout_button()
     return page
 
 
@@ -401,9 +405,10 @@ def company_analysis() -> None:
                 "fundamental_agent",
                 "risk_agent",
                 "decision_agent",
+                "llm_agent",
             ],
         )
-    a3.caption("Aucun prix ni signal n'est fabriqué pendant cette phase.")
+    a3.caption("L'agent OpenAI interprète uniquement les données structurées disponibles.")
 
     tab1, tab2, tab3, tab4 = st.tabs(["Synthèse", "Données", "Agents", "Journal"])
 
@@ -463,6 +468,13 @@ def company_analysis() -> None:
                 st.info("Aucun résultat d'agent disponible.")
             else:
                 st.dataframe(agents_df, use_container_width=True, hide_index=True)
+            llm_result = result.get("llm_analysis")
+            if llm_result:
+                st.markdown("#### Synthèse OpenAI")
+                if llm_result.get("status") == "completed":
+                    st.success(llm_result.get("analysis") or llm_result.get("reason", ""))
+                else:
+                    st.warning(llm_result.get("reason", "Agent OpenAI indisponible."))
             with st.expander("Sortie complète"):
                 st.json(result)
 
@@ -573,6 +585,7 @@ def agents() -> None:
             "fundamental_agent",
             "risk_agent",
             "decision_agent",
+            "llm_agent",
         ],
         default=[
             "market_agent",
@@ -580,6 +593,7 @@ def agents() -> None:
             "fundamental_agent",
             "risk_agent",
             "decision_agent",
+            "llm_agent",
         ],
     )
 
@@ -607,9 +621,26 @@ def agents() -> None:
     agents_df = pd.DataFrame(result.get("agents", []))
     if not agents_df.empty:
         st.dataframe(agents_df, use_container_width=True, hide_index=True)
+
+    llm_result = result.get("llm_analysis")
+    if llm_result:
+        st.subheader("Interprétation OpenAI")
+        if llm_result.get("status") == "completed":
+            l1, l2, l3 = st.columns(3)
+            l1.metric("Signal LLM", llm_result.get("signal", "—"))
+            llm_score = llm_result.get("score")
+            l2.metric("Score LLM", "—" if llm_score is None else f"{llm_score:.1f}/100")
+            l3.metric("Confiance LLM", f"{llm_result.get('confidence', 0):.0%}")
+            st.info(llm_result.get("analysis") or llm_result.get("reason", ""))
+        else:
+            st.warning(llm_result.get("reason", "Agent OpenAI indisponible."))
+
     with st.expander("Réponse structurée complète"):
         st.json(result)
-    st.warning("Les agents sont encore en mode structurel.")
+    st.caption(
+        "La décision déterministe reste prioritaire. Le LLM sert à interpréter, "
+        "contrôler la cohérence et expliciter les données manquantes."
+    )
     footer()
 
 
@@ -711,12 +742,30 @@ def configuration() -> None:
         columns=["Module", "État", "Prochaine étape"],
     )
     st.dataframe(modules, use_container_width=True, hide_index=True)
-    st.success("Étape suivante : connecter les premières données du marché marocain.")
+
+    st.subheader("Sécurité et API")
+    api_configured = bool(os.getenv("OPENAI_API_KEY"))
+    s1, s2, s3 = st.columns(3)
+    s1.metric("Protection par mot de passe", "Active")
+    s2.metric("API OpenAI", "Configurée" if api_configured else "Non configurée")
+    s3.metric("Modèle OpenAI", os.getenv("OPENAI_MODEL", "gpt-5.6-luna"))
+
+    if api_configured:
+        st.success(
+            "La clé OpenAI est chargée depuis les Secrets de Streamlit Cloud. "
+            "Sa valeur n'est jamais affichée."
+        )
+    else:
+        st.warning(
+            "Ajoute OPENAI_API_KEY dans Manage app → Settings → Secrets "
+            "pour activer llm_agent."
+        )
     footer()
 
 
 def main() -> None:
     inject_css()
+    require_password()
     initialize_state()
     pages: dict[str, Callable[[], None]] = {
         "Tableau de bord": dashboard,
