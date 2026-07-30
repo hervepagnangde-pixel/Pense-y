@@ -9,7 +9,8 @@ import streamlit as st
 from agents.orchestrator import MultiAgentOrchestrator
 from config.settings import get_settings
 from modules.financial_models import calculate_simple_return
-from modules.market_data import get_market_snapshot
+from modules.market_data import get_market_overview, get_market_snapshot
+from modules.news_data import get_official_news, get_official_source_registry
 from modules.notifications import build_alert_preview
 
 
@@ -95,6 +96,7 @@ def sidebar() -> str:
         "Navigation",
         [
             "Tableau de bord",
+            "Veille officielle",
             "Analyse d'une valeur",
             "Portefeuille simulé",
             "Multi-agents",
@@ -211,6 +213,120 @@ def dashboard() -> None:
     footer()
 
 
+
+def official_information() -> None:
+    page_header(
+        "Veille officielle",
+        "Cours, indices, publications réglementaires et indicateurs macroéconomiques officiels.",
+    )
+
+    st.info(
+        "Cette première version privilégie les sources institutionnelles marocaines. "
+        "Les cours de la Bourse de Casablanca peuvent être diffusés avec un décalage de 15 minutes."
+    )
+
+    overview = get_market_overview()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(
+        "MASI",
+        "Non extrait" if overview.masi is None else f"{overview.masi:,.2f}",
+    )
+    c2.metric(
+        "MASI 20",
+        "Non extrait" if overview.masi_20 is None else f"{overview.masi_20:,.2f}",
+    )
+    c3.metric(
+        "Volume de séance",
+        "Non extrait"
+        if overview.total_volume_mad is None
+        else f"{overview.total_volume_mad:,.0f} MAD",
+    )
+    c4.metric(
+        "Capitalisation",
+        "Non extraite"
+        if overview.capitalization_mad is None
+        else f"{overview.capitalization_mad:,.0f} MAD",
+    )
+
+    if overview.source_status == "connected":
+        st.success("Connexion établie avec la Bourse de Casablanca.")
+    elif overview.source_status == "partial":
+        st.warning(overview.warning or "Connexion partielle à la source de marché.")
+    else:
+        st.error(overview.warning or "La source de marché est momentanément indisponible.")
+
+    with st.expander("Détails de la séance et traçabilité"):
+        st.json(overview.to_dict())
+        st.link_button("Ouvrir la Bourse de Casablanca", overview.source_url)
+
+    st.subheader("Flux institutionnels")
+    registry = get_official_source_registry()
+    source_labels = {row["name"]: row["key"] for row in registry}
+    default_sources = [
+        name
+        for name, key in source_labels.items()
+        if key in {"bourse", "ammc", "hcp"}
+    ]
+    selected_names = st.multiselect(
+        "Sources à consulter",
+        options=list(source_labels),
+        default=default_sources,
+    )
+    selected_keys = tuple(source_labels[name] for name in selected_names)
+
+    news, statuses = get_official_news(selected_keys)
+    status_df = pd.DataFrame(statuses)
+    if not status_df.empty:
+        st.dataframe(
+            status_df[["Source", "Statut", "Éléments", "Erreur"]],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.subheader("Dernières publications détectées")
+    keyword = st.text_input(
+        "Filtrer les titres",
+        placeholder="Exemple : augmentation de capital, inflation, banque...",
+    ).strip()
+
+    news_df = pd.DataFrame(news)
+    if keyword and not news_df.empty:
+        news_df = news_df[
+            news_df["title"].str.contains(keyword, case=False, na=False)
+        ]
+
+    if news_df.empty:
+        st.warning(
+            "Aucune publication n'a été extraite. Cela peut venir d'une indisponibilité "
+            "temporaire ou d'une modification de la page officielle."
+        )
+    else:
+        display = news_df.rename(
+            columns={
+                "source": "Source",
+                "category": "Catégorie",
+                "date": "Date",
+                "title": "Titre",
+                "url": "Lien",
+            }
+        )
+        st.dataframe(
+            display[["Date", "Source", "Catégorie", "Titre", "Lien"]],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Lien": st.column_config.LinkColumn(
+                    "Document officiel",
+                    display_text="Ouvrir",
+                )
+            },
+        )
+
+    st.caption(
+        "Collecte mise en cache pendant quelques minutes afin de ne pas surcharger les sites officiels."
+    )
+    footer()
+
 def company_analysis() -> None:
     page_header(
         "Analyse d'une valeur",
@@ -279,8 +395,18 @@ def company_analysis() -> None:
         if snapshot is None:
             st.info("Clique sur « Préparer les données ».")
         else:
+            if snapshot.source_status == "connected":
+                st.success("Données extraites de la Bourse de Casablanca.")
+            elif snapshot.source_status == "partial":
+                st.warning(snapshot.warning or "Extraction partielle de la source officielle.")
+            else:
+                st.error(snapshot.warning or "Source officielle momentanément indisponible.")
             st.json(snapshot.to_dict())
-            st.warning("Le connecteur réel n'est pas encore branché.")
+            st.link_button("Ouvrir la fiche officielle", snapshot.source_url)
+            st.caption(
+                f"Source : {snapshot.source_name}. Décalage annoncé : "
+                f"{snapshot.market_delay_minutes} minutes."
+            )
 
     with tab3:
         result = st.session_state.last_agent_run
@@ -549,6 +675,7 @@ def main() -> None:
     initialize_state()
     pages: dict[str, Callable[[], None]] = {
         "Tableau de bord": dashboard,
+        "Veille officielle": official_information,
         "Analyse d'une valeur": company_analysis,
         "Portefeuille simulé": portfolio,
         "Multi-agents": agents,
