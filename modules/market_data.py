@@ -2,19 +2,22 @@ from __future__ import annotations
 
 import re
 import unicodedata
+import warnings
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
+from urllib3.exceptions import InsecureRequestWarning
 from urllib3.util.retry import Retry
 
 
 BOURSE_BASE_URL = "https://www.casablanca-bourse.com"
+TLS_FALLBACK_HOSTS = {"www.casablanca-bourse.com", "casablanca-bourse.com"}
 DEFAULT_TIMEOUT = 18
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -91,6 +94,75 @@ def _session() -> requests.Session:
     )
     return session
 
+
+
+def _get_official_page(url: str) -> tuple[requests.Response, str | None]:
+    """Télécharge une page officielle avec un repli TLS strictement limité.
+
+    La vérification SSL reste activée par défaut. Le repli sans vérification
+    n'est utilisé qu'après une SSLError et uniquement pour les domaines publics
+    explicitement autorisés de la Bourse de Casablanca.
+    """
+
+    session = _session()
+
+    try:
+        response = session.get(
+            url,
+            timeout=DEFAULT_TIMEOUT,
+            verify=True,
+            allow_redirects=True,
+        )
+        response.raise_for_status()
+        return response, None
+
+    except requests.exceptions.SSLError as ssl_error:
+        requested_host = (urlparse(url).hostname or "").lower()
+
+        if requested_host not in TLS_FALLBACK_HOSTS:
+            raise
+
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", InsecureRequestWarning)
+                response = session.get(
+                    url,
+                    timeout=DEFAULT_TIMEOUT,
+                    verify=False,
+                    allow_redirects=True,
+                )
+            response.raise_for_status()
+        except requests.RequestException as fallback_error:
+            raise requests.ConnectionError(
+                "La connexion a échoué avec vérification SSL puis avec le "
+                f"repli TLS contrôlé. Erreur initiale : {ssl_error}. "
+                f"Erreur du repli : {fallback_error}"
+            ) from fallback_error
+
+        final_host = (urlparse(response.url).hostname or "").lower()
+        if final_host not in TLS_FALLBACK_HOSTS:
+            raise requests.ConnectionError(
+                "La redirection TLS a quitté le domaine autorisé de la "
+                "Bourse de Casablanca."
+            )
+
+        return (
+            response,
+            "La page officielle a été chargée avec un repli TLS contrôlé, "
+            "car la chaîne de certificats du site n'a pas été validée par "
+            "Streamlit Cloud. Ce repli est limité au domaine public de la "
+            "Bourse de Casablanca et ne doit jamais être utilisé pour une "
+            "API contenant des clés ou des données privées.",
+        )
+
+
+def _combine_warnings(*messages: str | None) -> str | None:
+    clean_messages = [
+        message.strip()
+        for message in messages
+        if message and message.strip()
+    ]
+    return " ".join(clean_messages) if clean_messages else None
 
 def _normalize_space(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace("\xa0", " ")).strip()
@@ -220,8 +292,7 @@ def get_market_snapshot(ticker: str) -> MarketSnapshot:
         return _empty_snapshot(clean_ticker, url, "Le code de la valeur est vide.")
 
     try:
-        response = _session().get(url, timeout=DEFAULT_TIMEOUT)
-        response.raise_for_status()
+        response, tls_warning = _get_official_page(url)
     except requests.RequestException as exc:
         return _empty_snapshot(clean_ticker, url, f"Connexion impossible : {exc}")
 
@@ -230,13 +301,14 @@ def get_market_snapshot(ticker: str) -> MarketSnapshot:
         return _empty_snapshot(clean_ticker, url, "La page officielle ne contient aucune donnée lisible.")
 
     price = _parse_number(_extract_after_label(lines, ("Price", "Cours")))
-    warning = None
+    extraction_warning = None
     status = "connected" if price is not None else "partial"
     if price is None:
-        warning = (
+        extraction_warning = (
             "La page officielle a répondu, mais le cours n'a pas pu être extrait. "
             "La structure du site a peut-être changé ou la valeur est introuvable."
         )
+    warning = _combine_warnings(tls_warning, extraction_warning)
 
     observed_at = _first_matching_line(
         lines,
@@ -292,8 +364,7 @@ def get_market_overview() -> MarketOverview:
 
     url = f"{BOURSE_BASE_URL}/en/live-market/overview"
     try:
-        response = _session().get(url, timeout=DEFAULT_TIMEOUT)
-        response.raise_for_status()
+        response, tls_warning = _get_official_page(url)
     except requests.RequestException as exc:
         return MarketOverview(
             source_status="unavailable",
@@ -328,9 +399,10 @@ def get_market_overview() -> MarketOverview:
     status = "connected" if any(
         value is not None for value in (masi, masi_20)
     ) else "partial"
-    warning = None if status == "connected" else (
+    extraction_warning = None if status == "connected" else (
         "La page officielle a répondu, mais les indices n'ont pas pu être entièrement extraits."
     )
+    warning = _combine_warnings(tls_warning, extraction_warning)
 
     return MarketOverview(
         source_status=status,
