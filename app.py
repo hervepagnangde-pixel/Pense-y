@@ -9,7 +9,52 @@ import streamlit as st
 from agents.orchestrator import MultiAgentOrchestrator
 from config.settings import get_settings
 from modules.financial_models import calculate_simple_return
-from modules.market_data import get_market_overview, get_market_snapshot
+from modules import market_data
+
+get_market_snapshot = market_data.get_market_snapshot
+
+if hasattr(market_data, "get_market_overview"):
+    get_market_overview = market_data.get_market_overview
+else:
+    class _UnavailableMarketOverview:
+        source_status = "unavailable"
+        source_name = "Bourse de Casablanca"
+        source_url = "https://www.casablanca-bourse.com/en/live-market/overview"
+        session_status = None
+        session_date = None
+        masi = None
+        masi_change_percent = None
+        masi_20 = None
+        masi_20_change_percent = None
+        total_volume_mad = None
+        capitalization_mad = None
+        market_delay_minutes = 15
+        collected_at_utc = None
+        warning = (
+            "La fonction get_market_overview n'est pas encore disponible dans "
+            "modules/market_data.py. Le reste de l'application reste accessible."
+        )
+
+        def to_dict(self) -> dict[str, Any]:
+            return {
+                "source_status": self.source_status,
+                "source_name": self.source_name,
+                "source_url": self.source_url,
+                "session_status": self.session_status,
+                "session_date": self.session_date,
+                "masi": self.masi,
+                "masi_change_percent": self.masi_change_percent,
+                "masi_20": self.masi_20,
+                "masi_20_change_percent": self.masi_20_change_percent,
+                "total_volume_mad": self.total_volume_mad,
+                "capitalization_mad": self.capitalization_mad,
+                "market_delay_minutes": self.market_delay_minutes,
+                "collected_at_utc": self.collected_at_utc,
+                "warning": self.warning,
+            }
+
+    def get_market_overview() -> _UnavailableMarketOverview:
+        return _UnavailableMarketOverview()
 from modules.news_data import get_official_news, get_official_source_registry
 from modules.notifications import build_alert_preview
 
